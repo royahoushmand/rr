@@ -1,58 +1,53 @@
-import os
-import httpx
 import logging
-from fastapi import FastAPI, Request
+import httpx
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-app = FastAPI()
+# 🔐 توکن‌ها (برای تست مستقیم در کد)
+TELEGRAM_BOT_TOKEN = "7592422208:AAEgrZ09KpWltyJDMyqGutb6dgovii8T-xM"
+OPENROUTER_API_KEY = "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"
+
+# 📦 مدل هوش مصنوعی رایگان (DeepSeek V3)
+MODEL = "deepseek-ai/deepseek-coder:free"
+
+# 📋 تنظیمات لاگ
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
-
-@app.post("/")
-async def root(request: Request):
-    data = await request.json()
-    logging.info(f"User message: {data}")
-
-    if "message" in data and "text" in data["message"]:
-        chat_id = data["message"]["chat"]["id"]
-        user_message = data["message"]["text"]
-
-        ai_reply = await ask_openrouter(user_message)
-
-        await send_message(chat_id, ai_reply or "مشکلی در پاسخ‌دهی به وجود آمده.")
-
-    return {"ok": True}
-
-async def ask_openrouter(user_message: str) -> str:
+# 📨 ارسال پیام به OpenRouter
+async def ask_ai(message: str) -> str:
+    url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-
-    payload = {
-        "model": "mistralai/mistral-7b-instruct:free",  # ✅ مدل رایگان
+    json_data = {
+        "model": MODEL,
         "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": user_message}
+            {"role": "user", "content": message}
         ]
     }
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+            response = await client.post(url, headers=headers, json=json_data)
             response.raise_for_status()
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
     except Exception as e:
-        logging.error(f"Error contacting AI: {e}")
-        return None
+        logger.error(f"Error contacting AI: {e}")
+        return "خطا در اتصال به هوش مصنوعی. لطفاً بعداً دوباره تلاش کنید."
 
-async def send_message(chat_id: int, text: str):
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
-    async with httpx.AsyncClient() as client:
-        await client.post(TELEGRAM_API_URL + "sendMessage", json=payload)
+# 🤖 پاسخ به پیام کاربر
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
+    logger.info(f"User message: {user_message}")
+    ai_response = await ask_ai(user_message)
+    await update.message.reply_text(ai_response)
+
+# 🚀 اجرای ربات
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    logger.info("Bot started...")
+    app.run_polling()
