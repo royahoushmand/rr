@@ -1,53 +1,71 @@
 import logging
 import httpx
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
+from typing import List, Dict
+import os
 
-# 🔐 توکن‌ها (برای تست مستقیم در کد)
 TELEGRAM_BOT_TOKEN = "7592422208:AAEgrZ09KpWltyJDMyqGutb6dgovii8T-xM"
 OPENROUTER_API_KEY = "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"
 
-# 📦 مدل هوش مصنوعی رایگان (DeepSeek V3)
-MODEL = "deepseek-ai/deepseek-coder:free"
-
-# 📋 تنظیمات لاگ
+app = FastAPI()
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# 📨 ارسال پیام به OpenRouter
-async def ask_ai(message: str) -> str:
+class TelegramMessage(BaseModel):
+    message: Dict
+
+async def get_free_model():
+    url = "https://openrouter.ai/api/v1/models"
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}"}
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers)
+        models = response.json().get("data", [])
+        for model in models:
+            if model.get("pricing", {}).get("prompt") == 0:
+                return model["id"]
+    return None  # اگر هیچ مدل رایگانی نبود
+
+async def ask_ai(message: str, model: str):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-    json_data = {
-        "model": MODEL,
+    data = {
+        "model": model,
         "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": message}
         ]
     }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+
+async def send_message(chat_id: int, text: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": chat_id, "text": text}
+    async with httpx.AsyncClient() as client:
+        await client.post(url, data=data)
+
+@app.post("/")
+async def webhook(req: TelegramMessage):
+    message = req.message.get("text", "")
+    chat_id = req.message["chat"]["id"]
+
+    logging.info(f"User message: {message}")
 
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=json_data)
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
+        model = await get_free_model()
+        if not model:
+            await send_message(chat_id, "مدل رایگانی پیدا نشد. لطفاً بعداً تلاش کن.")
+            return {"status": "no free model"}
+
+        reply = await ask_ai(message, model)
+        await send_message(chat_id, reply)
     except Exception as e:
-        logger.error(f"Error contacting AI: {e}")
-        return "خطا در اتصال به هوش مصنوعی. لطفاً بعداً دوباره تلاش کنید."
+        logging.error(f"Error contacting AI: {e}")
+        await send_message(chat_id, "خطا در اتصال به مدل هوش مصنوعی.")
 
-# 🤖 پاسخ به پیام کاربر
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
-    logger.info(f"User message: {user_message}")
-    ai_response = await ask_ai(user_message)
-    await update.message.reply_text(ai_response)
-
-# 🚀 اجرای ربات
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logger.info("Bot started...")
-    app.run_polling()
+    return {"status": "ok"}
