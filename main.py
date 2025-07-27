@@ -1,47 +1,59 @@
-import logging
-import os
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import os, requests, logging
 from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# تنظیم لاگ‌ها
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Received /start command from user {update.effective_user.id}")
-    await update.message.reply_text("سلام! من آنلاینم و از طریق webhook کار می‌کنم 🙂")
+    await update.message.reply_text("سلام! سوالتو بفرست تا به Gemini بگم 🤖")
 
-# پیام‌های متنی
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Received text message from user {update.effective_user.id}: {update.message.text}")
-    await update.message.reply_text(f"شما گفتید: {update.message.text}")
+async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = update.message.text
+    logger.info(f"User message: {prompt}")
+    response = get_ai_response(prompt)
+    await update.message.reply_text(response)
 
-# main
+def get_ai_response(prompt: str) -> str:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        return "❗ API Key ست نشده"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
+        "messages": [{"role": "user", "content": prompt}]
+    }
+
+    try:
+        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
+        res.raise_for_status()
+        return res.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(f"Error contacting AI: {e}")
+        return "⛔ خطا در ارتباط با Gemini"
+
 def main():
-    BOT_TOKEN = os.environ.get("BOT_TOKEN")
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN environment variable not set.")
-        raise ValueError("BOT_TOKEN is required.")
-    
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-    
-    PORT = int(os.environ.get("PORT", "8000"))
-    WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-    if not WEBHOOK_URL:
-        logger.error("WEBHOOK_URL environment variable not set.")
-        raise ValueError("WEBHOOK_URL is required.")
-    
-    WEBHOOK_PATH = BOT_TOKEN
-    logger.info(f"Starting webhook on port {PORT} with URL: {WEBHOOK_URL}/{WEBHOOK_PATH}")
-    
-    application.run_webhook(
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+    PORT = int(os.getenv("PORT", "8000"))
+
+    if not BOT_TOKEN or not WEBHOOK_URL:
+        raise ValueError("BOT_TOKEN یا WEBHOOK_URL تنظیم نشده.")
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_ai))
+
+    app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
-        url_path=WEBHOOK_PATH,
-        webhook_url=f"{WEBHOOK_URL}/{WEBHOOK_PATH}"
+        url_path=BOT_TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
     )
 
 if __name__ == "__main__":
