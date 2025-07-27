@@ -1,60 +1,66 @@
-import os, requests, logging
+import os
+import logging
+import httpx
+from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
+# بارگذاری متغیرهای محیطی
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+# تنظیمات لاگ
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام! سوالتو بفرست تا به Gemini بگم 🤖")
-
-async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompt = update.message.text
-    logger.info(f"User message: {prompt}")
-    response = get_ai_response(prompt)
-    await update.message.reply_text(response)
-
-def get_ai_response(prompt: str) -> str:
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        return "❗ API Key ست نشده"
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
+    logger.info(f"User message: {user_message}")
 
     headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "HTTP-Referer": "https://github.com/royahoushmand/rr",
+        "X-Title": "RoyaBot"
     }
 
     data = {
-        "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
-        "messages": [{"role": "user", "content": prompt}]
+        "model": "openai/gpt-3.5-turbo",  # یا مثلاً "google/gemini-pro"
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": user_message}
+        ]
     }
 
     try:
-        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
-        res.raise_for_status()
-        return res.json()["choices"][0]["message"]["content"]
+        response = httpx.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
+        response.raise_for_status()
+        ai_reply = response.json()["choices"][0]["message"]["content"]
+        logger.info(f"AI reply: {ai_reply}")
     except Exception as e:
         logger.error(f"Error contacting AI: {e}")
-        return "⛔ خطا در ارتباط با Gemini"
+        ai_reply = "❌ مشکلی در ارتباط با هوش مصنوعی پیش آمد."
+
+    await update.message.reply_text(ai_reply)
 
 def main():
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-    PORT = int(os.getenv("PORT", "8000"))
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN is required.")
+    if not OPENROUTER_API_KEY:
+        raise ValueError("OPENROUTER_API_KEY is required.")
 
-    if not BOT_TOKEN or not WEBHOOK_URL:
-        raise ValueError("BOT_TOKEN یا WEBHOOK_URL تنظیم نشده.")
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_ai))
+    message_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    application.add_handler(message_handler)
 
-    app.run_webhook(
+    # اگر روی Render اجرا می‌کنی و webhook ست شده
+    application.run_webhook(
         listen="0.0.0.0",
-        port=PORT,
-        url_path=BOT_TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
+        port=int(os.environ.get("PORT", 10000)),
+        webhook_url=os.environ.get("WEBHOOK_URL")  # باید در env ست شده باشه
     )
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
