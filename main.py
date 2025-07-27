@@ -1,66 +1,59 @@
-import os
 import logging
 import httpx
-from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from fastapi import FastAPI, Request
+import uvicorn
 
-# بارگذاری متغیرهای محیطی
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
-# تنظیمات لاگ
+app = FastAPI()
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
-    logger.info(f"User message: {user_message}")
+# 🔐 توکن ربات تلگرام شما
+TELEGRAM_BOT_TOKEN = "7592422208:AAEgrZ09KpWltyJDMyqGutb6dgovii8T-xM"
 
+# 🔐 کلید API گرفته‌شده از OpenRouter
+OPENROUTER_API_KEY = "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"
+
+# 🧠 تابع پرسش از OpenRouter
+async def ask_openrouter(message: str) -> str:
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": "https://github.com/royahoushmand/rr",
-        "X-Title": "RoyaBot"
+        "Content-Type": "application/json"
     }
-
-    data = {
-        "model": "openai/gpt-3.5-turbo",  # یا مثلاً "google/gemini-pro"
+    payload = {
+        "model": "mistralai/mistral-7b-instruct:free",
         "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": user_message}
+            {"role": "user", "content": message}
         ]
     }
-
     try:
-        response = httpx.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
+        response = httpx.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
         response.raise_for_status()
-        ai_reply = response.json()["choices"][0]["message"]["content"]
-        logger.info(f"AI reply: {ai_reply}")
+        return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        logger.error(f"Error contacting AI: {e}")
-        ai_reply = "❌ مشکلی در ارتباط با هوش مصنوعی پیش آمد."
+        logging.error(f"❌ Error contacting AI: {e}")
+        return "متاسفم، مشکلی در اتصال به هوش مصنوعی پیش آمده."
 
-    await update.message.reply_text(ai_reply)
+# 📤 ارسال پاسخ به کاربر تلگرام
+async def send_message(chat_id: int, text: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    async with httpx.AsyncClient() as client:
+        await client.post(url, json=payload)
 
-def main():
-    if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN is required.")
-    if not OPENROUTER_API_KEY:
-        raise ValueError("OPENROUTER_API_KEY is required.")
+# 📥 دریافت پیام از وب‌هوک تلگرام
+@app.post("/")
+async def webhook(request: Request):
+    data = await request.json()
+    logging.info(f"📩 User message: {data}")
+    message = data.get("message", {})
+    text = message.get("text")
+    chat_id = message.get("chat", {}).get("id")
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    if text and chat_id:
+        reply = await ask_openrouter(text)
+        await send_message(chat_id, reply)
 
-    message_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-    application.add_handler(message_handler)
+    return {"ok": True}
 
-    # اگر روی Render اجرا می‌کنی و webhook ست شده
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=os.environ.get("WEBHOOK_URL")  # باید در env ست شده باشه
-    )
-
-if __name__ == '__main__':
-    main()
+# 🚀 اجرای لوکال (در زمان تست)
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
